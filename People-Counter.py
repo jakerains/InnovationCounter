@@ -1,76 +1,28 @@
 import cv2
 import numpy as np
-from ultralytics import YOLO
 import math
-from sort import Sort  # Ensure you have SORT implemented or installed
-import warnings
-from collections import defaultdict
+from ultralytics import YOLO
+from sort import *
 
-# Suppress specific FutureWarnings from PyTorch related to `torch.load`
-warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
-
-# Download and use YOLOv8-Medium instead of Large
-model = YOLO("yolov8m.pt")  # This will download automatically if not present
-model.conf = 0.12
-model.iou = 0.35
-model.classes = [0]
+# Initialize YOLO model and tracker
+model = YOLO("yolov8l.pt")
+model.conf = 0.12      # Confidence threshold
+model.iou = 0.35       # IOU threshold
+model.classes = [0]    # Person class only
 model.verbose = False
 
-# Define class names (only 'person' is needed, but including all for potential future use)
-classNames = [
-    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
-    'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
-    'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
-    'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
-    'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
-    'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
-    'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-    'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
-    'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
-    'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
-    'toothbrush'
-]
+# Initialize tracker
+tracker = Sort(max_age=25, min_hits=1, iou_threshold=0.25)
 
-# Optimize SORT tracker for faster movement
-tracker = Sort(max_age=25,       # Increased to maintain tracks longer
-              min_hits=1,        # Reduced to pick up tracks faster
-              iou_threshold=0.25) # Lower IOU threshold for faster movement
+# Add STS colors
+STS_GREEN = (0, 153, 76)  # BGR format
+STS_BLUE = (153, 76, 0)   # BGR format
+BACKGROUND_COLOR = (51, 51, 51)  # Dark gray
 
-# Initialize window name and create window
-window_name = "Webcam People Counter"
-cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-
-# Add fullscreen state variable and get screen resolution
-is_fullscreen = False
-screen = cv2.getWindowImageRect(window_name)
-screen_width = 1920  # Default full HD width
-screen_height = 1080  # Default full HD height
-
-# Function to maintain aspect ratio
-def resize_with_aspect_ratio(image, target_width, target_height):
-    h, w = image.shape[:2]
-    aspect = w / h
-    
-    # Calculate new dimensions maintaining aspect ratio
-    if target_width / target_height > aspect:
-        new_width = int(target_height * aspect)
-        new_height = target_height
-    else:
-        new_width = target_width
-        new_height = int(target_width / aspect)
-    
-    return cv2.resize(image, (new_width, new_height))
-
-# Keep track of the last frame with overlay
-last_overlay = None
-frame_buffer = 2
-frame_counter = 0
-
-# Function to list available cameras
-def list_available_cameras(max_cameras=10):
+def list_available_cameras():
+    """List all available camera indices"""
     available_cameras = []
-    for i in range(max_cameras):
+    for i in range(10):  # Check first 10 indexes
         cap = cv2.VideoCapture(i)
         if cap.isOpened():
             ret, _ = cap.read()
@@ -79,46 +31,43 @@ def list_available_cameras(max_cameras=10):
             cap.release()
     return available_cameras
 
-# Function to select a camera
 def select_camera():
+    """Let user select from available cameras"""
     cameras = list_available_cameras()
     if not cameras:
-        print("No cameras found.")
+        print("No cameras found!")
         return None
+    
+    print("\nAvailable cameras:")
+    for i, cam in enumerate(cameras):
+        print(f"{i}: Camera {cam}")
+    
+    selected = 0  # Default to first camera
+    print(f"\nSelected Camera {cameras[selected]}")
+    return cameras[selected]
 
-    print("Available cameras:")
-    for idx, camera in enumerate(cameras):
-        print(f"{idx}: Camera {camera}")
-
-    # For simplicity, select the first available camera
-    selected_camera = cameras[0]
-    print(f"Selected Camera {selected_camera}")
-    return selected_camera
-
-# Select camera
+# Initialize camera
 selected_camera = select_camera()
 if selected_camera is None:
-    exit()  # Exit if no camera is found
+    exit()
 
 cap = cv2.VideoCapture(selected_camera)
 if not cap.isOpened():
     print(f"Failed to open camera {selected_camera}")
     exit()
 
-# Get the default camera resolution first
-default_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-default_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+# Set camera properties for better performance
+cap.set(cv2.CAP_PROP_FPS, 30)
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-# Optimize camera settings for maximum speed
-cap.set(cv2.CAP_PROP_FPS, 60)               # Try to get 60 FPS
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)         # Minimize buffer delay
-cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG')) # Use MJPG codec
+# Initialize window
+window_name = "STS Innovation Lab People Counter"
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
-# Processing resolution (smaller for speed)
-process_width = 640
-process_height = 480
-
-cv2.resizeWindow(window_name, default_width, default_height)
+# Keep track of the last frame with overlay
+last_overlay = None
+frame_buffer = 2
+frame_counter = 0
 
 while True:
     success, img = cap.read()
@@ -202,39 +151,11 @@ while True:
     # Store this frame as the last overlay
     last_overlay = img.copy()
     
-    # Before displaying the frame
-    if is_fullscreen:
-        # Resize image maintaining aspect ratio
-        display_img = resize_with_aspect_ratio(img, screen_width, screen_height)
-        
-        # Create black background
-        black_bg = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
-        
-        # Calculate position to center the image
-        y_offset = (screen_height - display_img.shape[0]) // 2
-        x_offset = (screen_width - display_img.shape[1]) // 2
-        
-        # Place the resized image on the black background
-        black_bg[y_offset:y_offset + display_img.shape[0], 
-                x_offset:x_offset + display_img.shape[1]] = display_img
-        
-        # Display the properly formatted fullscreen image
-        cv2.imshow(window_name, black_bg)
-    else:
-        # Normal windowed mode display
-        cv2.imshow(window_name, img)
+    # Display the frame
+    cv2.imshow(window_name, img)
     
-    # Handle keyboard input
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q'):
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
-    elif key == ord('f'):  # Toggle fullscreen with 'f' key
-        is_fullscreen = not is_fullscreen
-        if is_fullscreen:
-            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        else:
-            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(window_name, default_width, default_height)
 
 cap.release()
 cv2.destroyAllWindows()
